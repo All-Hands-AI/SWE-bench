@@ -44,13 +44,21 @@ def get_logs_eval(log_fp: str) -> Tuple[dict, bool]:
 
     with open(log_fp) as f:
         content = f.read()
-        if any([
-            x not in content for x in [
-                f"{APPLY_PATCH_PASS} (test)",
-                f"{APPLY_PATCH_PASS} (pred)",
-            ]
+        
+        apply_test_statements = [
+            f"{APPLY_PATCH_PASS} (test)",
+            f"{APPLY_PATCH_PASS} (test_minimal)",
+        ]
 
-        ]):
+        apply_pred_statements = [
+            f"{APPLY_PATCH_PASS} (pred)",
+            f"{APPLY_PATCH_PASS} (pred_minimal)",
+        ]
+
+        test_applied = any(test_stmt in content for test_stmt in apply_test_statements)
+        pred_applied = any(pred_stmt in content for pred_stmt in apply_pred_statements)
+
+        if not (test_applied and pred_applied):
             # Eval patch was not applied successfully
             return {}, False
 

@@ -332,7 +332,7 @@ def get_model_report(
         log_content = open(log_path).read()
 
         # Check if there is an apply patch failure
-        if any([
+        if all([
             f"{APPLY_PATCH_FAIL}; ({patch_type})" in log_content
             for patch_type in [
                 PatchType.PATCH_PRED_TRY.value,

@@ -40,6 +40,8 @@ setuptools.setup(
         'rich',
         'unidiff',
         'tqdm',
+        'google-cloud-storage',
+        'kubernetes',
     ],
     extras_require={
         'inference': [

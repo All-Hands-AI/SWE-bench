@@ -587,7 +587,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_workers",
         type=int,
-        default=64,
+        default=256,
         help="Maximum number of workers to run in parallel"
     )
     args = parser.parse_args()

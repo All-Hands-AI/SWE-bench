@@ -622,3 +622,10 @@ if __name__ == "__main__":
         # Upload the directory
         upload_local_directory_to_gcs(local_output_dir, bucket_name, gcs_path)
         print("Done!")
+
+        # Add `DONE` file to GCS
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(gcs_path + "/DONE")
+        blob.upload_from_string("DONE")
+        print("DONE file uploaded to GCS.")

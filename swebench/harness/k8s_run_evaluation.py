@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import gzip
 import glob
 import time
 import json
@@ -548,7 +549,8 @@ def k8s_main(
         print("Using gold predictions - ignoring predictions_path")
         predictions = get_gold_predictions(dataset_name, split)
     else:
-        with open(predictions_path, 'r') as f:
+        open_fn = gzip.open if predictions_path.endswith(".json.gz") else open
+        with open_fn(predictions_path, 'r') as f:
             predictions = json.load(f) if predictions_path.endswith(".json") else [json.loads(line) for line in f]
     predictions = {pred[KEY_INSTANCE_ID]: pred for pred in predictions}
 

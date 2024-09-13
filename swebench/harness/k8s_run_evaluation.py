@@ -171,7 +171,8 @@ def k8s_run_instance(
             return instance_id, json.load(f)
     logger = setup_logger(instance_id, log_file)
 
-    eval_name = f"swebench-eval-{instance_id.replace('__', '_s_')}"
+    # Modify this line to replace underscores with hyphens to comply with k8s naming convention
+    eval_name = f"swebench-eval-{instance_id.replace('__', '-s-').replace('_', '-')}"
     try:
         # Create pod using Google Cloud's schema
         pod = V1Pod(

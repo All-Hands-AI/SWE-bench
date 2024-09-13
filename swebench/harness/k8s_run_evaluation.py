@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from kubernetes.client.api import core_v1_api
 from io import BytesIO
+from google.cloud import storage
 
 from swebench.harness.run_evaluation import (
     get_dataset_from_preds,
@@ -595,13 +596,35 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     gs_output_dir = args.output_dir
-    
-    with tempfile.TemporaryDirectory() as local_output_dir:
+
+    with tempfile.TemporaryDirectory() as local_predictions_dir, tempfile.TemporaryDirectory() as local_output_dir:
         args.output_dir = local_output_dir
+        
+        # download predictions from GCS
+        if args.predictions_path.startswith('gs://'):
+            print(f"[init] Downloading predictions from {args.predictions_path} to {local_predictions_dir}")
+            storage_client = storage.Client()
+            
+            # Parse the GCS path for predictions
+            pred_bucket_name, pred_blob_name = args.predictions_path[5:].split('/', 1)
+            
+            # Get the bucket and blob
+            bucket = storage_client.bucket(pred_bucket_name)
+            blob = bucket.blob(pred_blob_name)
+            
+            # Download to a local file
+            local_pred_file = os.path.join(local_predictions_dir, os.path.basename(pred_blob_name))
+            blob.download_to_filename(local_pred_file)
+            
+            print(f"[init] Predictions downloaded to {local_pred_file}")
+            
+            # Update the predictions_path to use the local file
+            args.predictions_path = local_pred_file
+
         k8s_main(**vars(args))
         
         # Copy results to GCS
-        print(f"Copying results to {gs_output_dir}")
+        print(f"[complete] Copying results to {gs_output_dir}")
         from google.cloud import storage
 
         def upload_local_directory_to_gcs(local_path, bucket_name, gcs_path):
@@ -613,7 +636,7 @@ if __name__ == "__main__":
                     remote_path = os.path.join(gcs_path, os.path.relpath(local_file, local_path))
                     blob = bucket.blob(remote_path)
                     blob.upload_from_filename(local_file)
-                    print(f"File {local_file} uploaded to {remote_path}.")
+                    print(f"[complete] File {local_file} uploaded to {remote_path}.")
 
         # Parse the GCS path
         if gs_output_dir.startswith('gs://'):

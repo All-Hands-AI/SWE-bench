@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import gzip
 import glob
 import time
@@ -162,25 +163,26 @@ def k8s_run_instance(
     instance_id = test_spec.instance_id
     log_dir = os.path.join(output_dir, 'instances', instance_id)
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "run_instance.log")
-    report_path = os.path.join(log_dir, "report.json")
+    log_file = pathlib.Path(os.path.join(log_dir, "run_instance.log"))
+    report_path = pathlib.Path(os.path.join(log_dir, "report.json"))
 
-    if os.path.exists(report_path):
+    if report_path.exists():
         with open(report_path, 'r') as f:
             return instance_id, json.load(f)
     logger = setup_logger(instance_id, log_file)
 
+    eval_name = f"swebench-eval-{instance_id.replace('__', '_s_')}"
     try:
         # Create pod using Google Cloud's schema
         pod = V1Pod(
             metadata=V1ObjectMeta(
-                name=f"eval-{instance_id}",
-                labels={"app": "swebench-eval"}
+                name=eval_name,
+                labels={"app": "swebench-eval", "instance_id": instance_id}
             ),
             spec=V1PodSpec(
                 containers=[
                     V1Container(
-                        name="eval-container",
+                        name=eval_name,
                         image=get_instance_docker_image(instance_id),
                         command=["/bin/bash", "-c"],
                         args=["while true; do sleep 30; done;"],  # Keep container running
@@ -550,9 +552,12 @@ def k8s_main(
         print("Using gold predictions - ignoring predictions_path")
         predictions = get_gold_predictions(dataset_name, split)
     else:
-        open_fn = gzip.open if predictions_path.endswith(".json.gz") else open
-        with open_fn(predictions_path, 'r') as f:
-            predictions = json.load(f) if predictions_path.endswith(".json") else [json.loads(line) for line in f]
+        if predictions_path.endswith(".jsonl.gz"):
+            with gzip.open(predictions_path, 'rt') as f:
+                predictions = [json.loads(line) for line in f]
+        else:
+            with open(predictions_path, 'r') as f:
+                predictions = json.load(f) if predictions_path.endswith(".json") else [json.loads(line) for line in f]
     predictions = {pred[KEY_INSTANCE_ID]: pred for pred in predictions}
 
     # Get dataset from predictions

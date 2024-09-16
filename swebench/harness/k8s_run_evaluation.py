@@ -146,7 +146,7 @@ def k8s_exec_run_with_timeout(
     pod_name: str,
     namespace: str,
     command: str,
-    timeout: int|None=60,
+    timeout: int | None=60,
 ):
     """
     Run a command in a Kubernetes pod with a timeout.
@@ -159,45 +159,35 @@ def k8s_exec_run_with_timeout(
         timeout (int): Timeout in seconds.
     """
     exec_result = ''
-    exception = None
     timed_out = False
 
-    def run_command():
-        nonlocal exec_result, exception
-        try:
-            exec_command = ["/bin/sh", "-c", command]
-            resp = stream(api_instance.connect_get_namespaced_pod_exec,
-                          name=pod_name,
-                          namespace=namespace,
-                          command=exec_command,
-                          stderr=True, stdin=False,
-                          stdout=True, tty=False,
-                          _preload_content=False)
-            while resp.is_open():
-                resp.update(timeout=1)
-                if resp.peek_stdout():
-                    exec_result += resp.read_stdout()
-                if resp.peek_stderr():
-                    exec_result += resp.read_stderr()
-            resp.close()
-        except Exception as e:
-            exception = e
+    exec_command = ['/bin/sh', '-c', command]
+    resp = stream(api_instance.connect_get_namespaced_pod_exec,
+                  pod_name,
+                  namespace,
+                  command=exec_command,
+                  stderr=True, stdin=False,
+                  stdout=True, tty=False,
+                  _preload_content=False)
 
-    thread = threading.Thread(target=run_command)
     start_time = time.time()
-    thread.start()
-    thread.join(timeout)
+    while resp.is_open():
+        resp.update(timeout=1)
+        if resp.peek_stdout():
+            exec_result += resp.read_stdout()
+        if resp.peek_stderr():
+            exec_result += resp.read_stderr()
+        
+        if timeout and (time.time() - start_time > timeout):
+            timed_out = True
+            break
 
-    if exception:
-        raise exception
-
-    if thread.is_alive():
-        timed_out = True
-        # Note: Kubernetes doesn't provide a direct way to terminate a running exec command
-        # You may need to implement a custom solution to terminate the command if required
+    if not timed_out:
+        resp.close()
 
     end_time = time.time()
     return exec_result, timed_out, end_time - start_time
+
 
 def generate_short_name(instance_id: str, eval_id: str, max_length: int = 63) -> str:
     # Create a hash of the EVAL_ID

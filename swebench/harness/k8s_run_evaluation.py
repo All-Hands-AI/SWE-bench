@@ -7,7 +7,7 @@ import glob
 import time
 import json
 import tempfile
-import threading
+import websocket
 import traceback
 from kubernetes import client, config
 from kubernetes.stream import stream
@@ -15,11 +15,13 @@ from kubernetes.client.models import V1Pod, V1PodSpec, V1Container, V1ObjectMeta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from kubernetes.client.api import core_v1_api
-from io import BytesIO
 from google.cloud import storage
 import hashlib
 import io
 import tarfile
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from kubernetes.client.rest import ApiException
+
 
 from swebench.harness.run_evaluation import (
     get_dataset_from_preds,
@@ -54,6 +56,30 @@ def get_instance_docker_image(instance_id: str) -> str:
     )  # to comply with docker image naming convention
     return DOCKER_IMAGE_PREFIX.rstrip('/') + '/' + image_name
 
+def wrap_function_for_retry(func):
+    return retry(
+        stop=stop_after_attempt(10),
+        wait=wait_exponential(min=5, max=60),
+        retry=retry_if_exception_type(ApiException) | retry_if_exception_type(websocket._exceptions.WebSocketBadStatusException),
+        before_sleep=lambda retry_state: print(f"Run into error {str(retry_state.outcome.exception())}, retrying in {retry_state.next_action.sleep} seconds..."),
+        retry_error_callback=lambda retry_state: retry_state.outcome.result()
+    )(func)
+
+@wrap_function_for_retry
+def create_namespaced_pod(k8s_api: client.CoreV1Api, namespace: str, body: V1Pod):
+    return k8s_api.create_namespaced_pod(namespace=namespace, body=body)
+
+@wrap_function_for_retry
+def read_namespaced_pod(k8s_api: client.CoreV1Api, name: str, namespace: str):
+    return k8s_api.read_namespaced_pod(name=name, namespace=namespace)
+
+@wrap_function_for_retry
+def delete_namespaced_pod(k8s_api: client.CoreV1Api, name: str, namespace: str):
+    return k8s_api.delete_namespaced_pod(name=name, namespace=namespace)
+
+@wrap_function_for_retry
+def connect_get_namespaced_pod_exec(k8s_api: client.CoreV1Api, name: str, namespace: str, command: str, **kwargs):
+    return stream(k8s_api.connect_get_namespaced_pod_exec, name, namespace, command=command, **kwargs)
 
 def write_file_to_k8s_pod(
     k8s_api: client.CoreV1Api,
@@ -114,7 +140,7 @@ def write_file_to_k8s_pod(
 
     return False
 
-def copy_file(kube_conn, namespace: str, pod_name: str, source_file: pathlib.Path, dest_path: str):
+def copy_file(k8s_api: client.CoreV1Api, namespace: str, pod_name: str, source_file: pathlib.Path, dest_path: str):
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode='w:tar') as tar:
         tar.add(source_file, arcname=pathlib.Path(dest_path).name)
@@ -122,11 +148,13 @@ def copy_file(kube_conn, namespace: str, pod_name: str, source_file: pathlib.Pat
 
     # Copying file
     exec_command = ['tar', 'xvf', '-', '-C', os.path.dirname(dest_path)]
-    resp = stream(kube_conn.connect_get_namespaced_pod_exec, pod_name, namespace,
-                  command=exec_command,
-                  stderr=True, stdin=True,
-                  stdout=True, tty=False,
-                  _preload_content=False)
+    resp = connect_get_namespaced_pod_exec(
+        k8s_api, pod_name, namespace,
+        command=exec_command,
+        stderr=True, stdin=True,
+        stdout=True, tty=False,
+        _preload_content=False
+    )
 
     while resp.is_open():
         resp.update(timeout=1)
@@ -162,13 +190,15 @@ def k8s_exec_run_with_timeout(
     timed_out = False
 
     exec_command = ['/bin/sh', '-c', command]
-    resp = stream(api_instance.connect_get_namespaced_pod_exec,
-                  pod_name,
-                  namespace,
-                  command=exec_command,
-                  stderr=True, stdin=False,
-                  stdout=True, tty=False,
-                  _preload_content=False)
+    resp = connect_get_namespaced_pod_exec(
+        api_instance,
+        name=pod_name,
+        namespace=namespace,
+        command=exec_command,
+        stderr=True, stdin=False,
+        stdout=True, tty=False,
+        _preload_content=False
+    )
 
     start_time = time.time()
     while resp.is_open():
@@ -257,7 +287,7 @@ def k8s_run_instance(
             )
         )
         try:
-            pod = k8s_api.create_namespaced_pod(namespace=K8S_EXECUTOR_NAMESPACE, body=pod)
+            pod = create_namespaced_pod(k8s_api, namespace=K8S_EXECUTOR_NAMESPACE, body=pod)
             print(f"[{instance_id}] [info] Pod created: {pod.metadata.name}")
         except Exception as e:
             print(f"[{instance_id}] [error] Failed to create pod: {str(e)}")
@@ -267,7 +297,7 @@ def k8s_run_instance(
         logger.info(f"[{instance_id}] Waiting for pod to be running...")
         while True:
             try:
-                pod = k8s_api.read_namespaced_pod(name=pod.metadata.name, namespace=K8S_EXECUTOR_NAMESPACE)
+                pod = read_namespaced_pod(k8s_api, name=pod.metadata.name, namespace=K8S_EXECUTOR_NAMESPACE)
                 logger.info(f"Pod status: {pod.status.phase}")
                 if pod.status.phase == "Running":
                     break
@@ -301,11 +331,13 @@ def k8s_run_instance(
             fi
         """]
         logger.info(f"[{instance_id}] Applying patch...")
-        output = stream(k8s_api.connect_get_namespaced_pod_exec,
-                      name=pod.metadata.name,
-                      namespace=K8S_EXECUTOR_NAMESPACE,
-                      command=exec_command,
-                      stderr=True, stdin=False, stdout=True, tty=False)
+        output = connect_get_namespaced_pod_exec(
+            k8s_api,
+            name=pod.metadata.name,
+            namespace=K8S_EXECUTOR_NAMESPACE,
+            command=exec_command,
+            stderr=True, stdin=False, stdout=True, tty=False
+        )
         logger.info(f"[{instance_id}] Applying patch output:\n{output}")
         if "APPLY_PATCH_FAIL" in output:
             logger.info(f"[{instance_id}] {APPLY_PATCH_FAIL}:\n{output}")
@@ -328,11 +360,13 @@ def k8s_run_instance(
 
         # Make the script executable
         exec_command = ["/bin/bash", "-c", "chmod +x /tmp/eval.sh"]
-        output = stream(k8s_api.connect_get_namespaced_pod_exec,
-               name=pod.metadata.name,
-               namespace=K8S_EXECUTOR_NAMESPACE,
-               command=exec_command,
-               stderr=True, stdin=False, stdout=True, tty=False)
+        output = connect_get_namespaced_pod_exec(
+            k8s_api,
+            name=pod.metadata.name,
+            namespace=K8S_EXECUTOR_NAMESPACE,
+            command=exec_command,
+            stderr=True, stdin=False, stdout=True, tty=False
+        )
         logger.info(f"[{instance_id}] Make eval script executable output:\n{output}")
 
         logger.info(f"[{instance_id}] Eval script written to pod, now attempting to execute...")
@@ -347,12 +381,6 @@ def k8s_run_instance(
         with open(test_output_path, 'w') as f:
             f.write(test_output)
         logger.info(f"Test output for {instance_id} written to {test_output_path}")
-
-        try:
-            k8s_api.delete_namespaced_pod(name=pod.metadata.name, namespace=K8S_EXECUTOR_NAMESPACE)
-            logger.info(f"Stopped pod {pod.metadata.name}")
-        except Exception as e:
-            logger.error(f"Error stopping pod {pod.metadata.name}: {str(e)}")
 
         # Get report from test output
         logger.info(f"Grading answer for {instance_id}...")
@@ -377,9 +405,10 @@ def k8s_run_instance(
     finally:
         # Delete pod
         try:
-            k8s_api.delete_namespaced_pod(name=pod.metadata.name, namespace=K8S_EXECUTOR_NAMESPACE)
-        except:
-            pass
+            delete_namespaced_pod(k8s_api, name=pod.metadata.name, namespace=K8S_EXECUTOR_NAMESPACE)
+            logger.info(f"Stopped pod {pod.metadata.name}")
+        except Exception as e:
+            logger.error(f"Error stopping pod {pod.metadata.name}: {str(e)}")
         close_logger(logger)
     return
 

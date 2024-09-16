@@ -1,0 +1,9 @@
+FROM python:3.11-bookworm
+
+ARG VERSION
+
+RUN mkdir -p /app
+COPY ./dist/swebench-${VERSION}.tar.gz /app
+
+WORKDIR /app
+RUN pip install ./swebench-${VERSION}.tar.gz

@@ -358,6 +358,12 @@ def k8s_run_instance(
             f.write(test_output)
         logger.info(f"Test output for {instance_id} written to {test_output_path}")
 
+        try:
+            k8s_api.delete_namespaced_pod(name=pod.metadata.name, namespace=K8S_EXECUTOR_NAMESPACE)
+            logger.info(f"Stopped pod {pod.metadata.name}")
+        except Exception as e:
+            logger.error(f"Error stopping pod {pod.metadata.name}: {str(e)}")
+
         # Get report from test output
         logger.info(f"Grading answer for {instance_id}...")
         report = get_eval_report(

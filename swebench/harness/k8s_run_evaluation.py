@@ -11,7 +11,13 @@ import websocket
 import traceback
 from kubernetes import client, config
 from kubernetes.stream import stream
-from kubernetes.client.models import V1Pod, V1PodSpec, V1Container, V1ObjectMeta, V1PodSecurityContext
+from kubernetes.client.models import (
+    V1Pod,
+    V1PodSpec,
+    V1Container,
+    V1ObjectMeta,
+    V1PodSecurityContext,
+)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from kubernetes.client.api import core_v1_api
@@ -19,7 +25,12 @@ from google.cloud import storage
 import hashlib
 import io
 import tarfile
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 from kubernetes.client.rest import ApiException
 
 
@@ -42,44 +53,64 @@ from swebench.harness.test_spec import make_test_spec, TestSpec
 from swebench.harness.utils import load_swebench_dataset, str2bool
 
 K8S_EXECUTOR_NAMESPACE = "swe-bench-eval-executors"
-DOCKER_IMAGE_PREFIX = os.environ.get('EVAL_DOCKER_IMAGE_PREFIX', 'us-docker.pkg.dev/evaluation-428620/swe-bench-images')
-print(f'Using docker image prefix: {DOCKER_IMAGE_PREFIX}')
+DOCKER_IMAGE_PREFIX = os.environ.get(
+    "EVAL_DOCKER_IMAGE_PREFIX", "us-docker.pkg.dev/evaluation-428620/swe-bench-images"
+)
+print(f"Using docker image prefix: {DOCKER_IMAGE_PREFIX}")
 
-EVAL_ID = os.environ.get('EVAL_ID')
-assert EVAL_ID is not None, 'EVAL_ID environment variable is required'
-print(f'Getting eval id: {EVAL_ID}')
+EVAL_ID = os.environ.get("EVAL_ID")
+assert EVAL_ID is not None, "EVAL_ID environment variable is required"
+print(f"Getting eval id: {EVAL_ID}")
+
 
 def get_instance_docker_image(instance_id: str) -> str:
-    image_name = 'sweb.eval.x86_64.' + instance_id
+    image_name = "sweb.eval.x86_64." + instance_id
     image_name = image_name.replace(
-        '__', '_s_'
+        "__", "_s_"
     )  # to comply with docker image naming convention
-    return DOCKER_IMAGE_PREFIX.rstrip('/') + '/' + image_name
+    return DOCKER_IMAGE_PREFIX.rstrip("/") + "/" + image_name
+
 
 def wrap_function_for_retry(func):
     return retry(
         stop=stop_after_attempt(10),
         wait=wait_exponential(min=5, max=60),
-        retry=retry_if_exception_type(ApiException) | retry_if_exception_type(websocket._exceptions.WebSocketBadStatusException),
-        before_sleep=lambda retry_state: print(f"Run into error {str(retry_state.outcome.exception())}, retrying in {retry_state.next_action.sleep} seconds..."),
-        retry_error_callback=lambda retry_state: retry_state.outcome.result()
+        retry=retry_if_exception_type(ApiException)
+        | retry_if_exception_type(websocket._exceptions.WebSocketBadStatusException),
+        before_sleep=lambda retry_state: print(
+            f"Run into error {str(retry_state.outcome.exception())}, retrying in {retry_state.next_action.sleep} seconds..."
+        ),
+        retry_error_callback=lambda retry_state: retry_state.outcome.result(),
     )(func)
+
 
 @wrap_function_for_retry
 def create_namespaced_pod(k8s_api: client.CoreV1Api, namespace: str, body: V1Pod):
     return k8s_api.create_namespaced_pod(namespace=namespace, body=body)
 
+
 @wrap_function_for_retry
 def read_namespaced_pod(k8s_api: client.CoreV1Api, name: str, namespace: str):
     return k8s_api.read_namespaced_pod(name=name, namespace=namespace)
+
 
 @wrap_function_for_retry
 def delete_namespaced_pod(k8s_api: client.CoreV1Api, name: str, namespace: str):
     return k8s_api.delete_namespaced_pod(name=name, namespace=namespace)
 
+
 @wrap_function_for_retry
-def connect_get_namespaced_pod_exec(k8s_api: client.CoreV1Api, name: str, namespace: str, command: str, **kwargs):
-    return stream(k8s_api.connect_get_namespaced_pod_exec, name, namespace, command=command, **kwargs)
+def connect_get_namespaced_pod_exec(
+    k8s_api: client.CoreV1Api, name: str, namespace: str, command: str, **kwargs
+):
+    return stream(
+        k8s_api.connect_get_namespaced_pod_exec,
+        name,
+        namespace,
+        command=command,
+        **kwargs,
+    )
+
 
 def write_file_to_k8s_pod(
     k8s_api: client.CoreV1Api,
@@ -89,7 +120,7 @@ def write_file_to_k8s_pod(
     file_path: str,
     logger=None,
     max_retries=3,
-    retry_delay=5
+    retry_delay=5,
 ):
     """
     Write file content to a specified path in a Kubernetes pod using tar archiving.
@@ -110,7 +141,7 @@ def write_file_to_k8s_pod(
     for attempt in range(max_retries):
         try:
             # Create a temporary file with the content
-            with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_file:
+            with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp_file:
                 temp_file.write(file_content)
                 temp_file_path = pathlib.Path(temp_file.name)
 
@@ -126,34 +157,49 @@ def write_file_to_k8s_pod(
                 logger.error(f"Error when writing file to pod: {str(e)}")
             if attempt < max_retries - 1:
                 if logger:
-                    logger.info(f"Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                    logger.info(
+                        f"Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})"
+                    )
                 time.sleep(retry_delay)
             else:
                 if logger:
-                    logger.error(f"Failed to write file to pod after {max_retries} attempts")
+                    logger.error(
+                        f"Failed to write file to pod after {max_retries} attempts"
+                    )
                 return False
 
         finally:
             # Clean up the temporary file
-            if 'temp_file_path' in locals():
+            if "temp_file_path" in locals():
                 os.unlink(temp_file_path)
 
     return False
 
-def copy_file(k8s_api: client.CoreV1Api, namespace: str, pod_name: str, source_file: pathlib.Path, dest_path: str):
+
+def copy_file(
+    k8s_api: client.CoreV1Api,
+    namespace: str,
+    pod_name: str,
+    source_file: pathlib.Path,
+    dest_path: str,
+):
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode='w:tar') as tar:
+    with tarfile.open(fileobj=buf, mode="w:tar") as tar:
         tar.add(source_file, arcname=pathlib.Path(dest_path).name)
     commands = [buf.getvalue()]
 
     # Copying file
-    exec_command = ['tar', 'xvf', '-', '-C', os.path.dirname(dest_path)]
+    exec_command = ["tar", "xvf", "-", "-C", os.path.dirname(dest_path)]
     resp = connect_get_namespaced_pod_exec(
-        k8s_api, pod_name, namespace,
+        k8s_api,
+        pod_name,
+        namespace,
         command=exec_command,
-        stderr=True, stdin=True,
-        stdout=True, tty=False,
-        _preload_content=False
+        stderr=True,
+        stdin=True,
+        stdout=True,
+        tty=False,
+        _preload_content=False,
     )
 
     while resp.is_open():
@@ -169,12 +215,13 @@ def copy_file(k8s_api: client.CoreV1Api, namespace: str, pod_name: str, source_f
             break
     resp.close()
 
+
 def k8s_exec_run_with_timeout(
     api_instance: client.CoreV1Api,
     pod_name: str,
     namespace: str,
     command: str,
-    timeout: int | None=60,
+    timeout: int | None = 60,
 ):
     """
     Run a command in a Kubernetes pod with a timeout.
@@ -186,18 +233,20 @@ def k8s_exec_run_with_timeout(
         command (str): Command to run.
         timeout (int): Timeout in seconds.
     """
-    exec_result = ''
+    exec_result = ""
     timed_out = False
 
-    exec_command = ['/bin/sh', '-c', command]
+    exec_command = ["/bin/sh", "-c", command]
     resp = connect_get_namespaced_pod_exec(
         api_instance,
         name=pod_name,
         namespace=namespace,
         command=exec_command,
-        stderr=True, stdin=False,
-        stdout=True, tty=False,
-        _preload_content=False
+        stderr=True,
+        stdin=False,
+        stdout=True,
+        tty=False,
+        _preload_content=False,
     )
 
     start_time = time.time()
@@ -207,7 +256,7 @@ def k8s_exec_run_with_timeout(
             exec_result += resp.read_stdout()
         if resp.peek_stderr():
             exec_result += resp.read_stderr()
-        
+
         if timeout and (time.time() - start_time > timeout):
             timed_out = True
             break
@@ -223,20 +272,21 @@ def generate_short_name(instance_id: str, eval_id: str, max_length: int = 63) ->
     # Create a hash of the EVAL_ID
     hash_object = hashlib.md5(eval_id.encode())
     hash_hex = hash_object.hexdigest()
-    
+
     # Use the first 8 characters of the hash
     short_hash = hash_hex[:8]
-    
+
     # Create a name using instance_id and the short hash of EVAL_ID
     name = f"{instance_id}-{short_hash}"
-    
+
     # Ensure the name is not longer than max_length
     if len(name) > max_length:
         # If it's too long, truncate the instance_id part
-        truncated_instance_id = instance_id[:max_length - len(short_hash) - 1]
+        truncated_instance_id = instance_id[: max_length - len(short_hash) - 1]
         name = f"{truncated_instance_id}-{short_hash}"
-    
-    return name.replace('_', '-').lower()
+
+    return name.replace("_", "-").lower()
+
 
 def k8s_run_instance(
     test_spec: TestSpec,
@@ -246,13 +296,13 @@ def k8s_run_instance(
     output_dir: str | None = None,
 ) -> dict:
     instance_id = test_spec.instance_id
-    log_dir = os.path.join(output_dir, 'instances', instance_id)
+    log_dir = os.path.join(output_dir, "instances", instance_id)
     os.makedirs(log_dir, exist_ok=True)
     log_file = pathlib.Path(os.path.join(log_dir, "run_instance.log"))
     report_path = pathlib.Path(os.path.join(log_dir, "report.json"))
 
     if report_path.exists():
-        with open(report_path, 'r') as f:
+        with open(report_path, "r") as f:
             return instance_id, json.load(f)
     logger = setup_logger(instance_id, log_file)
 
@@ -265,8 +315,8 @@ def k8s_run_instance(
                 labels={
                     "app": "swebench-eval",
                     "instance_id": instance_id,
-                    "eval_id": EVAL_ID
-                }
+                    "eval_id": EVAL_ID,
+                },
             ),
             spec=V1PodSpec(
                 containers=[
@@ -274,7 +324,9 @@ def k8s_run_instance(
                         name=eval_name,
                         image=get_instance_docker_image(instance_id),
                         command=["/bin/bash", "-c"],
-                        args=["while true; do sleep 30; done;"],  # Keep container running
+                        args=[
+                            "while true; do sleep 30; done;"
+                        ],  # Keep container running
                         working_dir="/workspace",  # Set working directory
                     )
                 ],
@@ -283,11 +335,13 @@ def k8s_run_instance(
                     run_as_user=1000,  # Set user ID
                     run_as_group=1000,  # Set group ID
                     fs_group=1000,  # Set filesystem group
-                )
-            )
+                ),
+            ),
         )
         try:
-            pod = create_namespaced_pod(k8s_api, namespace=K8S_EXECUTOR_NAMESPACE, body=pod)
+            pod = create_namespaced_pod(
+                k8s_api, namespace=K8S_EXECUTOR_NAMESPACE, body=pod
+            )
             print(f"[{instance_id}] [info] Pod created: {pod.metadata.name}")
         except Exception as e:
             print(f"[{instance_id}] [error] Failed to create pod: {str(e)}")
@@ -297,7 +351,9 @@ def k8s_run_instance(
         logger.info(f"[{instance_id}] Waiting for pod to be running...")
         while True:
             try:
-                pod = read_namespaced_pod(k8s_api, name=pod.metadata.name, namespace=K8S_EXECUTOR_NAMESPACE)
+                pod = read_namespaced_pod(
+                    k8s_api, name=pod.metadata.name, namespace=K8S_EXECUTOR_NAMESPACE
+                )
                 logger.info(f"Pod status: {pod.status.phase}")
                 if pod.status.phase == "Running":
                     break
@@ -310,14 +366,27 @@ def k8s_run_instance(
         # Write patch file to pod
         logger.info(f"Writing patch file to pod: {pod.metadata.name}")
         patch_content = pred["model_patch"] or ""
-        success = write_file_to_k8s_pod(k8s_api, pod.metadata.name, K8S_EXECUTOR_NAMESPACE, 
-                                        patch_content, "/tmp/patch.diff", logger)
+        success = write_file_to_k8s_pod(
+            k8s_api,
+            pod.metadata.name,
+            K8S_EXECUTOR_NAMESPACE,
+            patch_content,
+            "/tmp/patch.diff",
+            logger,
+        )
         if not success:
-            raise EvaluationError(instance_id, "Failed to write patch file to pod", logger)
-        logger.info(f"[{instance_id}] Patch file written to pod, now attempting to apply patch...")
+            raise EvaluationError(
+                instance_id, "Failed to write patch file to pod", logger
+            )
+        logger.info(
+            f"[{instance_id}] Patch file written to pod, now attempting to apply patch..."
+        )
 
         # Attempt to apply patch
-        exec_command = ["/bin/bash", "-c", """
+        exec_command = [
+            "/bin/bash",
+            "-c",
+            """
             cd /testbed && 
             if git apply -v /tmp/patch.diff; then
                 echo "APPLY_PATCH_PASS"
@@ -329,34 +398,46 @@ def k8s_run_instance(
                     echo "APPLY_PATCH_FAIL"
                 fi
             fi
-        """]
+        """,
+        ]
         logger.info(f"[{instance_id}] Applying patch...")
         output = connect_get_namespaced_pod_exec(
             k8s_api,
             name=pod.metadata.name,
             namespace=K8S_EXECUTOR_NAMESPACE,
             command=exec_command,
-            stderr=True, stdin=False, stdout=True, tty=False
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
         )
         logger.info(f"[{instance_id}] Applying patch output:\n{output}")
         if "APPLY_PATCH_FAIL" in output:
             logger.info(f"[{instance_id}] {APPLY_PATCH_FAIL}:\n{output}")
-            raise EvaluationError(
-                instance_id,
-                f"{APPLY_PATCH_FAIL}:\n{output}",
-                logger
-            )
+            raise EvaluationError(instance_id, f"{APPLY_PATCH_FAIL}:\n{output}", logger)
         elif "APPLY_PATCH_PASS" in output:
             logger.info(f"[{instance_id}] {APPLY_PATCH_PASS}:\n{output}")
         else:
-            logger.info(f"[{instance_id}] Unexpected output when applying patch:\n{output}")
-            raise EvaluationError(instance_id, f"Unexpected output when applying patch:\n{output}", logger)
+            logger.info(
+                f"[{instance_id}] Unexpected output when applying patch:\n{output}"
+            )
+            raise EvaluationError(
+                instance_id, f"Unexpected output when applying patch:\n{output}", logger
+            )
 
         # Write eval script to pod
-        success = write_file_to_k8s_pod(k8s_api, pod.metadata.name, K8S_EXECUTOR_NAMESPACE, 
-                                        test_spec.eval_script, "/tmp/eval.sh", logger)
+        success = write_file_to_k8s_pod(
+            k8s_api,
+            pod.metadata.name,
+            K8S_EXECUTOR_NAMESPACE,
+            test_spec.eval_script,
+            "/tmp/eval.sh",
+            logger,
+        )
         if not success:
-            raise EvaluationError(instance_id, "Failed to write eval script to pod", logger)
+            raise EvaluationError(
+                instance_id, "Failed to write eval script to pod", logger
+            )
 
         # Make the script executable
         exec_command = ["/bin/bash", "-c", "chmod +x /tmp/eval.sh"]
@@ -365,20 +446,33 @@ def k8s_run_instance(
             name=pod.metadata.name,
             namespace=K8S_EXECUTOR_NAMESPACE,
             command=exec_command,
-            stderr=True, stdin=False, stdout=True, tty=False
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
         )
         logger.info(f"[{instance_id}] Make eval script executable output:\n{output}")
 
-        logger.info(f"[{instance_id}] Eval script written to pod, now attempting to execute...")
+        logger.info(
+            f"[{instance_id}] Eval script written to pod, now attempting to execute..."
+        )
 
         exec_command = "/tmp/eval.sh"
-        test_output, timed_out, execution_time = k8s_exec_run_with_timeout(k8s_api, pod.metadata.name, K8S_EXECUTOR_NAMESPACE, exec_command, timeout=timeout)
+        test_output, timed_out, execution_time = k8s_exec_run_with_timeout(
+            k8s_api,
+            pod.metadata.name,
+            K8S_EXECUTOR_NAMESPACE,
+            exec_command,
+            timeout=timeout,
+        )
 
         if timed_out:
-            logger.warning(f"Execution of {instance_id} timed out after {execution_time:.2f} seconds")
+            logger.warning(
+                f"Execution of {instance_id} timed out after {execution_time:.2f} seconds"
+            )
 
         test_output_path = os.path.join(log_dir, "test_output.txt")
-        with open(test_output_path, 'w') as f:
+        with open(test_output_path, "w") as f:
             f.write(test_output)
         logger.info(f"Test output for {instance_id} written to {test_output_path}")
 
@@ -390,10 +484,12 @@ def k8s_run_instance(
             log_path=test_output_path,
             include_tests_status=True,
         )
-        logger.info(f"report: {report}\nResult for {instance_id}: resolved: {report[instance_id]['resolved']}")
+        logger.info(
+            f"report: {report}\nResult for {instance_id}: resolved: {report[instance_id]['resolved']}"
+        )
 
         # Write report to report.json
-        with open(report_path, 'w') as f:
+        with open(report_path, "w") as f:
             json.dump(report, f, indent=4)
         return instance_id, report
 
@@ -405,12 +501,15 @@ def k8s_run_instance(
     finally:
         # Delete pod
         try:
-            delete_namespaced_pod(k8s_api, name=pod.metadata.name, namespace=K8S_EXECUTOR_NAMESPACE)
+            delete_namespaced_pod(
+                k8s_api, name=pod.metadata.name, namespace=K8S_EXECUTOR_NAMESPACE
+            )
             logger.info(f"Stopped pod {pod.metadata.name}")
         except Exception as e:
             logger.error(f"Error stopping pod {pod.metadata.name}: {str(e)}")
         close_logger(logger)
     return
+
 
 def k8s_run_instances(
     predictions: dict,
@@ -461,6 +560,7 @@ def k8s_run_instances(
     print("All instances run.")
     return results
 
+
 def k8s_make_run_report(
     predictions: dict,
     full_dataset: list,
@@ -490,7 +590,7 @@ def k8s_make_run_report(
     for instance in full_dataset:
         instance_id = instance[KEY_INSTANCE_ID]
         if instance_id not in predictions:
-            # skip instances without 
+            # skip instances without
             incomplete_ids.add(instance_id)
             continue
         prediction = predictions[instance_id]
@@ -498,16 +598,13 @@ def k8s_make_run_report(
             empty_patch_ids.add(instance_id)
             continue
         report_file = os.path.join(
-            output_dir,
-            'instances',
-            prediction[KEY_INSTANCE_ID],
-            "report.json"
+            output_dir, "instances", prediction[KEY_INSTANCE_ID], "report.json"
         )
         report_file_exists = os.path.exists(report_file)
         if report_file_exists:
             # If report file exists, then the instance has been run
             completed_ids.add(instance_id)
-            with open(report_file, 'r') as f:
+            with open(report_file, "r") as f:
                 report = json.load(f)
             if report[instance_id]["resolved"]:
                 # Record if the instance was resolved
@@ -517,7 +614,6 @@ def k8s_make_run_report(
         else:
             # Otherwise, the instance was not run successfully
             error_ids.add(instance_id)
-
 
     # print final report
     print(f"Total instances: {len(full_dataset)}")
@@ -547,23 +643,21 @@ def k8s_make_run_report(
         "error_ids": list(sorted(error_ids)),
         "schema_version": 2,
     }
-    report_file = os.path.join(
-        output_dir,
-        "report.json"
-    )
-    with open(report_file, 'w') as f:
+    report_file = os.path.join(output_dir, "report.json")
+    with open(report_file, "w") as f:
         json.dump(report, f, indent=4)
     print(f"Report written to {report_file}")
     return report_file
 
+
 def k8s_get_dataset_from_preds(
-        dataset_name: str,
-        split: str,
-        instance_ids: list,
-        predictions: dict,
-        output_dir: str,
-        exclude_completed: bool = True
-    ):
+    dataset_name: str,
+    split: str,
+    instance_ids: list,
+    predictions: dict,
+    output_dir: str,
+    exclude_completed: bool = True,
+):
     """
     Return only instances that have predictions and are in the dataset.
     If instance_ids is provided, only return instances with those IDs.
@@ -586,8 +680,10 @@ def k8s_get_dataset_from_preds(
         # check that all instance IDs have predictions
         missing_preds = instance_ids - set(predictions.keys())
         if missing_preds:
-            print(f"Warning: Missing predictions for {len(missing_preds)} instance IDs.")
-    
+            print(
+                f"Warning: Missing predictions for {len(missing_preds)} instance IDs."
+            )
+
     # check that all prediction IDs are in the dataset
     prediction_ids = set(predictions.keys())
     if prediction_ids - dataset_ids:
@@ -610,10 +706,7 @@ def k8s_get_dataset_from_preds(
             continue
         prediction = predictions[instance[KEY_INSTANCE_ID]]
         report_file = os.path.join(
-            output_dir,
-            "instances",
-            prediction[KEY_INSTANCE_ID],
-            "report.json"
+            output_dir, "instances", prediction[KEY_INSTANCE_ID], "report.json"
         )
         if os.path.exists(report_file):
             completed_ids.add(instance[KEY_INSTANCE_ID])
@@ -623,10 +716,19 @@ def k8s_get_dataset_from_preds(
         print(f"{len(completed_ids)} instances already run, skipping...")
         dataset = [i for i in dataset if i[KEY_INSTANCE_ID] not in completed_ids]
 
-    empty_patch_ids = {k for k, v in predictions.items() if v["model_patch"] == "" or v["model_patch"] is None}
+    empty_patch_ids = {
+        k
+        for k, v in predictions.items()
+        if v["model_patch"] == "" or v["model_patch"] is None
+    }
 
     # filter dataset to only instances with predictions
-    dataset = [i for i in dataset if i[KEY_INSTANCE_ID] in prediction_ids and i[KEY_INSTANCE_ID] not in empty_patch_ids]
+    dataset = [
+        i
+        for i in dataset
+        if i[KEY_INSTANCE_ID] in prediction_ids
+        and i[KEY_INSTANCE_ID] not in empty_patch_ids
+    ]
     return dataset
 
 
@@ -640,20 +742,26 @@ def k8s_main(
     max_workers: int,
 ):
     # Load predictions
-    if predictions_path == 'gold':
+    if predictions_path == "gold":
         print("Using gold predictions - ignoring predictions_path")
         predictions = get_gold_predictions(dataset_name, split)
     else:
         if predictions_path.endswith(".jsonl.gz"):
-            with gzip.open(predictions_path, 'rt') as f:
+            with gzip.open(predictions_path, "rt") as f:
                 predictions = [json.loads(line) for line in f]
         else:
-            with open(predictions_path, 'r') as f:
-                predictions = json.load(f) if predictions_path.endswith(".json") else [json.loads(line) for line in f]
+            with open(predictions_path, "r") as f:
+                predictions = (
+                    json.load(f)
+                    if predictions_path.endswith(".json")
+                    else [json.loads(line) for line in f]
+                )
     predictions = {pred[KEY_INSTANCE_ID]: pred for pred in predictions}
 
     # Get dataset from predictions
-    dataset = k8s_get_dataset_from_preds(dataset_name, split, instance_ids, predictions, output_dir)
+    dataset = k8s_get_dataset_from_preds(
+        dataset_name, split, instance_ids, predictions, output_dir
+    )
     full_dataset = load_swebench_dataset(dataset_name, split)
     print(f"Running {len(dataset)} unevaluated instances...")
 
@@ -672,23 +780,49 @@ def k8s_main(
     client = None  # We don't need Docker client for Kubernetes version
     k8s_make_run_report(predictions, full_dataset, output_dir)
 
+
 if __name__ == "__main__":
     from argparse import ArgumentParser
 
     parser = ArgumentParser()
-    parser.add_argument("--dataset_name", default="princeton-nlp/SWE-bench_Lite", type=str, help="Name of dataset or path to JSON file.")
-    parser.add_argument("--split", type=str, default="test", help="Split of the dataset")
-    parser.add_argument("--instance_ids", nargs="+", type=str, help="Instance IDs to run (space separated)")
-    parser.add_argument("--predictions_path", type=str, help="Path to predictions file (can be local or in Google Cloud Storage bucket) - if 'gold', uses gold predictions", required=True)
-    parser.add_argument("--output_dir", type=str, default="none", help="Path to output directory (can be local or in Google Cloud Storage bucket)")
     parser.add_argument(
-        "--timeout", type=int, default=1_800, help="Timeout (in seconds) for running tests for each instance"
+        "--dataset_name",
+        default="princeton-nlp/SWE-bench_Lite",
+        type=str,
+        help="Name of dataset or path to JSON file.",
+    )
+    parser.add_argument(
+        "--split", type=str, default="test", help="Split of the dataset"
+    )
+    parser.add_argument(
+        "--instance_ids",
+        nargs="+",
+        type=str,
+        help="Instance IDs to run (space separated)",
+    )
+    parser.add_argument(
+        "--predictions_path",
+        type=str,
+        help="Path to predictions file (can be local or in Google Cloud Storage bucket) - if 'gold', uses gold predictions",
+        required=True,
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="none",
+        help="Path to output directory (can be local or in Google Cloud Storage bucket)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=1_800,
+        help="Timeout (in seconds) for running tests for each instance",
     )
     parser.add_argument(
         "--max_workers",
         type=int,
         default=256,
-        help="Maximum number of workers to run in parallel"
+        help="Maximum number of workers to run in parallel",
     )
     args = parser.parse_args()
 
@@ -696,30 +830,34 @@ if __name__ == "__main__":
 
     with tempfile.TemporaryDirectory() as local_predictions_dir, tempfile.TemporaryDirectory() as local_output_dir:
         args.output_dir = local_output_dir
-        
+
         # download predictions from GCS
-        if args.predictions_path.startswith('gs://'):
-            print(f"[init] Downloading predictions from {args.predictions_path} to {local_predictions_dir}")
+        if args.predictions_path.startswith("gs://"):
+            print(
+                f"[init] Downloading predictions from {args.predictions_path} to {local_predictions_dir}"
+            )
             storage_client = storage.Client()
-            
+
             # Parse the GCS path for predictions
-            pred_bucket_name, pred_blob_name = args.predictions_path[5:].split('/', 1)
-            
+            pred_bucket_name, pred_blob_name = args.predictions_path[5:].split("/", 1)
+
             # Get the bucket and blob
             bucket = storage_client.bucket(pred_bucket_name)
             blob = bucket.blob(pred_blob_name)
-            
+
             # Download to a local file
-            local_pred_file = os.path.join(local_predictions_dir, os.path.basename(pred_blob_name))
+            local_pred_file = os.path.join(
+                local_predictions_dir, os.path.basename(pred_blob_name)
+            )
             blob.download_to_filename(local_pred_file)
-            
+
             print(f"[init] Predictions downloaded to {local_pred_file}")
-            
+
             # Update the predictions_path to use the local file
             args.predictions_path = local_pred_file
 
         k8s_main(**vars(args))
-        
+
         # Copy results to GCS
         print(f"[complete] Copying results to {gs_output_dir}")
         from google.cloud import storage
@@ -728,16 +866,18 @@ if __name__ == "__main__":
             storage_client = storage.Client()
             bucket = storage_client.bucket(bucket_name)
 
-            for local_file in glob.glob(local_path + '/**', recursive=True):
+            for local_file in glob.glob(local_path + "/**", recursive=True):
                 if os.path.isfile(local_file):
-                    remote_path = os.path.join(gcs_path, os.path.relpath(local_file, local_path))
+                    remote_path = os.path.join(
+                        gcs_path, os.path.relpath(local_file, local_path)
+                    )
                     blob = bucket.blob(remote_path)
                     blob.upload_from_filename(local_file)
                     print(f"[complete] File {local_file} uploaded to {remote_path}.")
 
         # Parse the GCS path
-        if gs_output_dir.startswith('gs://'):
-            bucket_name, gcs_path = gs_output_dir[5:].split('/', 1)
+        if gs_output_dir.startswith("gs://"):
+            bucket_name, gcs_path = gs_output_dir[5:].split("/", 1)
         else:
             raise ValueError("Invalid GCS path. It should start with 'gs://'")
 

@@ -42,6 +42,7 @@ setuptools.setup(
         'tqdm',
         'google-cloud-storage',
         'kubernetes',
+        'tenacity',
     ],
     extras_require={
         'inference': [

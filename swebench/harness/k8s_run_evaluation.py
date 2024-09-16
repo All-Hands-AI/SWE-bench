@@ -268,9 +268,9 @@ def k8s_run_instance(
         )
         try:
             pod = k8s_api.create_namespaced_pod(namespace=K8S_EXECUTOR_NAMESPACE, body=pod)
-            print(f"Pod created: {pod}")
+            print(f"[{instance_id}] [info] Pod created: {pod.metadata.name}")
         except Exception as e:
-            logger.error(f"Failed to create pod: {str(e)}")
+            print(f"[{instance_id}] [error] Failed to create pod: {str(e)}")
             raise
 
         # Wait for pod to be running

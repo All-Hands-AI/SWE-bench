@@ -132,7 +132,7 @@ def get_requirements(instance: SWEbenchInstance) -> str:
     return get_requirements_by_commit(instance["repo"], commit)
 
 
-def get_test_directives(instance: SWEbenchInstance) -> list:
+def get_test_directives(instance: SWEbenchInstance, run_all_tests: bool) -> list:
     """
     Get test directives from the test_patch of a task instance
 
@@ -147,11 +147,14 @@ def get_test_directives(instance: SWEbenchInstance) -> list:
 
     # Get test directives from test patch and remove non-test files
     diff_pat = r"diff --git a/.* b/(.*)"
-    test_patch = instance["test_patch"]
-    directives = re.findall(diff_pat, test_patch)
-    directives = [
-        d for d in directives if not any(d.endswith(ext) for ext in NON_TEST_EXTS)
-    ]
+    if not run_all_tests:
+        test_patch = instance["test_patch"]
+        directives = re.findall(diff_pat, test_patch)
+        directives = [
+            d for d in directives if not any(d.endswith(ext) for ext in NON_TEST_EXTS)
+        ]
+    else:
+        directives = ["."]
 
     # For Django tests, remove extension + "tests/" prefix and convert slashes to dots (module referencing)
     if instance["repo"] == "django/django":
@@ -266,7 +269,7 @@ def make_env_script_list_py(instance, specs, env_name) -> list:
 
 
 def make_eval_script_list_py(
-    instance, specs, env_name, repo_directory, base_commit, test_patch
+    instance, specs, env_name, repo_directory, base_commit, test_patch, run_all_tests
 ) -> list:
     """
     Applies the test patch and runs the tests.
@@ -283,7 +286,7 @@ def make_eval_script_list_py(
             MAP_REPO_VERSION_TO_SPECS[instance["repo"]][instance["version"]][
                 "test_cmd"
             ],
-            *get_test_directives(instance),
+            *get_test_directives(instance, run_all_tests),
         ]
     )
     eval_commands = [

@@ -166,6 +166,7 @@ def make_test_spec(
     base_image_tag: str = LATEST,
     env_image_tag: str = LATEST,
     instance_image_tag: str = LATEST,
+    run_all_tests: bool = False,
 ) -> TestSpec:
     if isinstance(instance, TestSpec):
         return instance
@@ -202,7 +203,13 @@ def make_test_spec(
     )
     env_script_list = make_env_script_list(instance, specs, env_name)
     eval_script_list = make_eval_script_list(
-        instance, specs, env_name, repo_directory, base_commit, test_patch
+        instance,
+        specs,
+        env_name,
+        repo_directory,
+        base_commit,
+        test_patch,
+        run_all_tests,
     )
     if platform.machine() in {"aarch64", "arm64"}:
         # use arm64 unless explicitly specified

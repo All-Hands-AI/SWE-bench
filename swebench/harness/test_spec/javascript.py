@@ -134,11 +134,12 @@ def make_env_script_list_js(instance, specs, env_name) -> list:
 
 
 def make_eval_script_list_js(
-    instance, specs, env_name, repo_directory, base_commit, test_patch
+    instance, specs, env_name, repo_directory, base_commit, test_patch, run_all_tests
 ) -> list:
     """
     Applies the test patch and runs the tests.
     """
+    # run_all_tests is a no-op -- we always run all tests
     HEREDOC_DELIMITER = "EOF_114329324912"
     test_files = get_modified_files(test_patch)
     # Reset test files to the state they should be in before the patch.

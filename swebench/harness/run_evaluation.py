@@ -274,6 +274,7 @@ def run_instances(
     namespace: str = "swebench",
     instance_image_tag: str = "latest",
     rewrite_reports: bool = False,
+    run_all_tests: bool = False,
 ):
     """
     Run all instances for the given predictions in parallel.
@@ -292,7 +293,10 @@ def run_instances(
     test_specs = list(
         map(
             lambda instance: make_test_spec(
-                instance, namespace=namespace, instance_image_tag=instance_image_tag
+                instance,
+                namespace=namespace,
+                instance_image_tag=instance_image_tag,
+                run_all_tests=run_all_tests,
             ),
             instances,
         )
@@ -455,6 +459,7 @@ def main(
     modal: bool,
     instance_image_tag: str = "latest",
     report_dir: str = ".",
+    run_all_tests: bool = False,
 ):
     """
     Run evaluation harness for the given dataset and predictions.
@@ -494,7 +499,14 @@ def main(
             print("No instances to run.")
         else:
             validate_modal_credentials()
-            run_instances_modal(predictions, dataset, full_dataset, run_id, timeout)
+            run_instances_modal(
+                predictions,
+                dataset,
+                full_dataset,
+                run_id,
+                timeout,
+                run_all_tests,
+            )
         return
 
     # run instances locally
@@ -521,6 +533,7 @@ def main(
             namespace=namespace,
             instance_image_tag=instance_image_tag,
             rewrite_reports=rewrite_reports,
+            run_all_tests=run_all_tests,
         )
 
     # clean images + make final report
@@ -608,6 +621,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--report_dir", type=str, default=".", help="Directory to write reports to"
+    )
+    parser.add_argument(
+        "--run_all_tests",
+        type=str2bool,
+        default=False,
+        help="Run all unit tests instead of only P2P + F2P tests",
     )
 
     # Modal execution args

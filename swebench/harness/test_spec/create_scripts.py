@@ -38,14 +38,23 @@ def make_env_script_list(instance, specs, env_name) -> list:
 
 
 def make_eval_script_list(
-    instance, specs, env_name, repo_directory, base_commit, test_patch
+    instance, specs, env_name, repo_directory, base_commit, test_patch, run_all_tests
 ) -> list:
     """
     Applies the test patch and runs the tests.
-    """
+    """     
     ext = MAP_REPO_TO_EXT[instance["repo"]]
     func = {
         "js": make_eval_script_list_js,
         "py": make_eval_script_list_py,
     }[ext]
-    return func(instance, specs, env_name, repo_directory, base_commit, test_patch)
+    return func(
+        instance,
+        specs,
+        env_name,
+        repo_directory,
+        base_commit,
+        test_patch,
+        run_all_tests,
+    )
+

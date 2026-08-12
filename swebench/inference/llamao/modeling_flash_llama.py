@@ -28,6 +28,7 @@ from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 import torch.distributed as dist
 
+from transformers import GenerationMixin
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
@@ -356,7 +357,7 @@ class LlamaAttention(nn.Module):
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[tuple[torch.Tensor]]]:
         h_size = hidden_states.size(-1)
 
-        has_layer_past = past_key_value is not None
+        has_layer_past = past_key_value is not None and past_key_value[0] is not None
 
         if has_layer_past:
             past_kv = past_key_value[0]
@@ -532,7 +533,7 @@ class LlamaDecoderLayer(nn.Module):
         return outputs
 
 
-class LlamaPreTrainedModel(PreTrainedModel):
+class LlamaPreTrainedModel(PreTrainedModel, GenerationMixin):
     config_class = LlamaConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
@@ -673,7 +674,9 @@ class LlamaModel(LlamaPreTrainedModel):
                     all_hidden_states += (hidden_states,)
 
             past_key_value = (
-                past_key_values[idx] if past_key_values is not None else None
+                past_key_values[idx]
+                if past_key_values is not None and idx < len(past_key_values)
+                else None
             )
 
             if self.gradient_checkpointing and self.training:
@@ -731,7 +734,7 @@ class LlamaModel(LlamaPreTrainedModel):
         )
 
 
-class LlamaForCausalLM(LlamaPreTrainedModel):
+class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):

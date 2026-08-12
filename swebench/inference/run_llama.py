@@ -307,6 +307,7 @@ def generate(
                     do_sample=False if temperature == 0 else True,
                     max_new_tokens=200,
                     stopping_criteria=stopping_criteria,
+                    use_cache=False,
                 )
                 total_len = output.shape[-1]
                 output = output[0].cpu()[input_ids.shape[-1] :]

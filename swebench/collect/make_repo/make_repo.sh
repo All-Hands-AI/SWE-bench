@@ -8,19 +8,28 @@ set -euo pipefail
 
 REPO_TARGET=$1
 
+echo "** Checking if target repository '$REPO_TARGET' exists..."
 # Check if the target repository exists
-gh repo view "$REPO_TARGET" > /dev/null || exit 1
+if ! gh repo view "$REPO_TARGET" > /dev/null 2>&1; then
+    echo "ERROR: Cannot access repository '$REPO_TARGET'. Please check:"
+    echo "1. The repository exists and is accessible"
+    echo "2. You are authenticated with GitHub CLI (run 'gh auth status')"
+    echo "3. The repository name is correct"
+    exit 1
+fi
+echo "** Target repository '$REPO_TARGET' exists and is accessible."
 
 # Set the organization and repository names
-ORG_NAME="swe-bench"
+ORG_NAME="swe-bench-repos"
 NEW_REPO_NAME="${REPO_TARGET//\//__}"
 
+echo "** Checking if mirror repository '$ORG_NAME/$NEW_REPO_NAME' already exists..."
 # Check if the new repository already exists
-gh repo view "$ORG_NAME/$NEW_REPO_NAME" > /dev/null 2>&1
-if [ $? -eq 0 ]; then
+if gh repo view "$ORG_NAME/$NEW_REPO_NAME" > /dev/null 2>&1; then
     echo "The repository $ORG_NAME/$NEW_REPO_NAME already exists."
     exit 1
 else
+    echo "** Mirror repository doesn't exist, creating it..."
     # Create mirror repository
     gh repo create "$ORG_NAME/$NEW_REPO_NAME" --private
 fi
@@ -55,19 +64,70 @@ cd ..; rm -rf "$TARGET_REPO_DIR"
 # Clone the mirror repository
 git clone git@github.com:$ORG_NAME/$NEW_REPO_NAME.git
 
-# Delete .github/workflows if it exists
-if [ -d "$NEW_REPO_NAME/.github/workflows" ]; then
-    # Remove the directory
-    rm -rf "$NEW_REPO_NAME/.github/workflows"
+# Clean up GitHub automation files and directories
+echo "** Cleaning up GitHub automation files..."
+cd "$NEW_REPO_NAME"
 
-    # Commit and push the changes
-    cd "$NEW_REPO_NAME";
-    git add -A;
-    git commit -m "Removed .github/workflows";
-    git push origin main;  # Change 'master' to your desired branch
-    cd ..;
-else
-    echo "$NEW_REPO_NAME/.github/workflows does not exist. No action required."
+# Track if any changes were made
+CHANGES_MADE=false
+
+# Remove GitHub Actions workflows
+if [ -d ".github/workflows" ]; then
+    echo "Removing .github/workflows"
+    rm -rf ".github/workflows"
+    CHANGES_MADE=true
 fi
 
+# Remove Dependabot configuration
+if [ -f ".github/dependabot.yml" ] || [ -f ".github/dependabot.yaml" ]; then
+    echo "Removing Dependabot configuration"
+    rm -f ".github/dependabot.yml" ".github/dependabot.yaml"
+    CHANGES_MADE=true
+fi
+
+# Remove GitHub Codespaces configuration
+if [ -d ".devcontainer" ]; then
+    echo "Removing .devcontainer directory"
+    rm -rf ".devcontainer"
+    CHANGES_MADE=true
+fi
+
+# Remove other GitHub automation files
+GITHUB_FILES=(
+    ".github/CODEOWNERS"
+    ".github/FUNDING.yml"
+    ".github/FUNDING.yaml"
+    ".github/ISSUE_TEMPLATE"
+    ".github/PULL_REQUEST_TEMPLATE"
+    ".github/pull_request_template.md"
+    ".github/issue_template.md"
+    ".github/SECURITY.md"
+    ".github/CODE_OF_CONDUCT.md"
+    ".github/CONTRIBUTING.md"
+)
+
+for file in "${GITHUB_FILES[@]}"; do
+    if [ -e "$file" ]; then
+        echo "Removing $file"
+        rm -rf "$file"
+        CHANGES_MADE=true
+    fi
+done
+
+# Commit and push changes if any were made
+if [ "$CHANGES_MADE" = true ]; then
+    echo "** Committing and pushing cleanup changes..."
+    # Get the current default branch name
+    DEFAULT_BRANCH=$(git branch --show-current)
+    git add -A
+    git commit -m "Removed GitHub automation files and configurations"
+    git push origin "$DEFAULT_BRANCH"
+    echo "** GitHub automation cleanup completed."
+else
+    echo "** No GitHub automation files found to clean up."
+fi
+
+cd ..
+
 rm -rf "$NEW_REPO_NAME"
+

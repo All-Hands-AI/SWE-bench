@@ -1,11 +1,21 @@
 # Data Collection
+
+> [!NOTE]
+> If you interested in creating tasks for training models to solve software engineering tasks,
+> check out [SWE-smith](https://swesmith.com/) ([Code](https://github.com/SWE-bench/SWE-smith), [Paper](https://swesmith.com/assets/paper.pdf)).
+> 
+> SWE-smith is a toolkit for creating execution environments and SWE-bench style task instances at scale.
+> 
+> It is designed to be highly compatible with [SWE-agent](https://github.com/SWE-agent/SWE-agent),
+> to generate training data, and SWE-bench for evaluation.
+
 This folder includes the code for the first two parts of the benchmark construction procedure as described in the paper, specifically 1. Repo selection and data scraping, and 2. Attribute-based filtering.
 
-We include a comprehensive [tutorial](https://github.com/swe-bench/SWE-bench/tree/main/assets/collection.md) that describes the end-to-end procedure for collecting evaluation task instances from PyPI repositories.
+We include a comprehensive [tutorial](docs/guides/collection.md) that describes the end-to-end procedure for collecting evaluation task instances from PyPI repositories.
 
 > SWE-bench's collection pipeline is currently designed to target PyPI packages. We hope to expand SWE-bench to more repositories and languages in the future.
 
-<img src="../../assets/figures/collection.png">
+<img src="../../docs/assets/figures/collection.png">
 
 ## Collection Procedure
 To run collection on your own repositories, run the `run_get_tasks_pipeline.sh` script. Given a repository or list of repositories (formatted as `owner/name`), for each repository this command will generate...
@@ -21,7 +31,7 @@ In this section, we briefly describe each of the files in this directory and its
 
 **🧐 GitHub Repository Selection**
 * `get_top_pypi.py`
-    * Purpose: Retrieves the PyPI URL, GitHub URL, # of ⭐, and # of Issues + PRs for the [top 5000](https://hugovk.github.io/top-pypi-packages/") most downloaded PyPI packages.
+    * Purpose: Retrieves the PyPI URL, GitHub URL, # of ⭐, and # of Issues + PRs for the [top 5000](https://hugovk.github.io/top-pypi-packages/) most downloaded PyPI packages.
     * Usage: `python get_top_pypi.py`
 
 **⛏️ GitHub Data Collection**

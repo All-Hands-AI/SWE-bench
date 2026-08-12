@@ -170,3 +170,8 @@ cython_debug/
 data/repos/copies
 notebooks/
 *logs/
+
+# run_evaluation writes these summaries into cwd
+gold.*.json
+loose-ends.txt
+todo_later.txt

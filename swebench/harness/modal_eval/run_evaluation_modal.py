@@ -13,7 +13,9 @@ import traceback
 
 from dataclasses import dataclass
 from pathlib import Path
-from swebench.harness.docker_build import setup_logger
+from swebench.logger import setup_logger
+
+
 from swebench.harness.reporting import make_run_report
 from swebench.harness.utils import EvaluationError
 from typing import cast
@@ -34,7 +36,8 @@ from swebench.harness.constants import (
     RUN_EVALUATION_LOG_DIR,
 )
 from swebench.harness.grading import get_eval_report
-from swebench.harness.test_spec.test_spec import make_test_spec, TestSpec
+from swebench.types import TestSpec
+from swebench.harness.utils import make_test_spec
 
 
 @dataclass
@@ -158,6 +161,9 @@ class ModalSandboxRuntime:
 
     @staticmethod
     def get_instance_image(test_spec: TestSpec) -> modal.Image:
+        # TODO: setup_env_script and install_repo_script are not part of the
+        # current TestSpec dataclass.  This method needs to be updated to work
+        # with pre-built images or to source these scripts from elsewhere.
         env_script = test_spec.setup_env_script
         # add trusted host flag for Modal's PyPI mirror
         env_script = env_script.replace(
@@ -198,8 +204,12 @@ class ModalSandboxRuntime:
                 "/opt/miniconda3/bin/conda config --append channels conda-forge",
                 "adduser --disabled-password --gecos 'dog' nonroot",
             )
-            .copy_local_file(Path(remote_env_script_path), remote_env_script_path)
-            .copy_local_file(Path(remote_repo_script_path), remote_repo_script_path)
+            .add_local_file(
+                Path(remote_env_script_path), remote_env_script_path, copy=True
+            )
+            .add_local_file(
+                Path(remote_repo_script_path), remote_repo_script_path, copy=True
+            )
             .run_commands(
                 f"chmod +x {remote_env_script_path}",
                 f"/bin/bash -c 'source ~/.bashrc && {remote_env_script_path}'",
@@ -224,6 +234,7 @@ def get_log_dir(pred: dict, run_id: str, instance_id: str) -> Path:
     ),
     timeout=120
     * 60,  # Much larger than default timeout to account for image build time
+    include_source=True,
 )
 def run_instance_modal(
     test_spec: TestSpec,
@@ -402,7 +413,7 @@ def run_instances_modal(
         run_id (str): Run ID
         timeout (int): Timeout for running tests
     """
-    test_specs = list(map(make_test_spec, instances))
+    test_specs = [make_test_spec(inst) for inst in instances]
 
     with modal.enable_output():
         with app.run():
@@ -429,10 +440,13 @@ def run_instances_modal(
                         )
                         for test_spec in run_test_specs
                     ],
+                    return_exceptions=True,
                 )
 
                 for result in results:
-                    result = cast(TestOutput, result)
+                    if not isinstance(result, TestOutput):
+                        print(f"Result failed with error: {result}")
+                        continue
 
                     # Save logs locally
                     log_dir = result.log_dir

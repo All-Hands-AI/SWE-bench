@@ -3,12 +3,8 @@ from typing import Any
 from swebench.harness.constants import (
     APPLY_PATCH_FAIL,
     END_TEST_OUTPUT,
-    FAIL_ONLY_REPOS,
     FAIL_TO_FAIL,
     FAIL_TO_PASS,
-    KEY_INSTANCE_ID,
-    KEY_PREDICTION,
-    MAP_REPO_VERSION_TO_SPECS,
     PASS_TO_FAIL,
     PASS_TO_PASS,
     RESET_FAILED,
@@ -19,17 +15,60 @@ from swebench.harness.constants import (
     ResolvedStatus,
     TestStatus,
 )
-from swebench.harness.test_spec.test_spec import TestSpec
-from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
+from swebench.types import TestSpec
+from swebench.harness.log_parsers import PARSER_REGISTRY
 
 
 # MARK: Utility functions
+def _resolve_case(case: str, sm: dict[str, str]) -> str | None:
+    """Return the status-map key for ``case``, tolerating truncated parametrized ids.
+
+    676 expected ids in SWE-bench_Verified are truncated mid-parameter (issue #290),
+    e.g. ``test_ogip_grammar_fail[log(photon``. For those only, prefix-match when the
+    candidates agree on pass-vs-fail; exact ids keep exact-match semantics. Requires
+    ``[`` to outnumber ``]`` so free-form non-pytest names never reach the fallback.
+
+    TODO(john-b-yang): wrong placement — a pytest/Verified-specific data defect
+    encoded in grading, which is meant to be benchmark-agnostic.
+    TODO(john-b-yang): relocate by repairing the 676 truncated ids in a Verified
+    revision (47 are ambiguous, needing manual resolution), then delete this.
+    """
+    if case in sm:
+        return case
+    if case.count("[") > case.count("]"):
+        matches = [k for k in sm if k.startswith(case)]
+        # PASSED and XFAIL grade identically, so compare outcome not raw status
+        passing = {TestStatus.PASSED.value, TestStatus.XFAIL.value}
+        if matches and len({sm[k] in passing for k in matches}) == 1:
+            return matches[0]
+    return None
+
+
 def test_passed(case: str, sm: dict[str, str]) -> bool:
-    return case in sm and sm[case] in [TestStatus.PASSED.value, TestStatus.XFAIL.value]
+    key = _resolve_case(case, sm)
+    return key is not None and sm[key] in [
+        TestStatus.PASSED.value,
+        TestStatus.XFAIL.value,
+    ]
+
+
+def test_maintained(case: str, sm: dict[str, str]) -> bool:
+    """P2P semantics: a skipped test is not a regression, unlike for F2P."""
+    key = _resolve_case(case, sm)
+    return test_passed(case, sm) or (
+        key is not None and sm[key] == TestStatus.SKIPPED.value
+    )
 
 
 def test_failed(case: str, sm: dict[str, str]) -> bool:
-    return case not in sm or sm[case] in [TestStatus.FAILED.value, TestStatus.ERROR.value]
+    key = _resolve_case(case, sm)
+    return key is None or sm[key] in [
+        TestStatus.FAILED.value,
+        TestStatus.ERROR.value,
+        # a skipped F2P test is not a resolution; without this, a patch that makes
+        # every F2P test skip lands in neither list and scores RESOLVED_FULL
+        TestStatus.SKIPPED.value,
+    ]
 
 
 # MARK: Evaluation report functions
@@ -45,12 +84,7 @@ def get_logs_eval(test_spec: TestSpec, log_fp: str) -> tuple[dict[str, str], boo
 
     TODO(john-b-yang): Check this is working properly...
     """
-    repo = test_spec.repo
-    version = test_spec.version
-    log_parser = MAP_REPO_TO_PARSER[repo]
-    test_cmd = MAP_REPO_VERSION_TO_SPECS[repo][version]["test_cmd"]
-    if isinstance(test_cmd, list):
-        test_cmd = test_cmd[-1]
+    log_parser = PARSER_REGISTRY[test_spec.log_parser]
 
     with open(log_fp) as f:
         content = f.read()
@@ -73,8 +107,14 @@ def get_logs_eval(test_spec: TestSpec, log_fp: str) -> tuple[dict[str, str], boo
             return {}, False
 
         # Get status map of evaluation results
-        content = content.split(START_TEST_OUTPUT)[1].split(END_TEST_OUTPUT)[0]
-        return log_parser(content, test_spec), True
+        sliced = content.split(START_TEST_OUTPUT)[1].split(END_TEST_OUTPUT)[0]
+        status_map = log_parser(sliced, test_spec)
+        if not status_map:
+            # Some runners emit results outside the markers (stdout/stderr ordering
+            # differs, e.g. on Modal), so fall back to the whole log rather than
+            # reporting a run with no results at all.
+            status_map = log_parser(content, test_spec)
+        return status_map, True
 
 
 def get_eval_tests_report(
@@ -113,6 +153,12 @@ def get_eval_tests_report(
         elif test_failed(test_case, eval_status_map):
             failed.append(test_case)
 
+    def check_maintained(test_case, eval_status_map, success, failed):
+        if test_maintained(test_case, eval_status_map):
+            success.append(test_case)
+        elif test_failed(test_case, eval_status_map):
+            failed.append(test_case)
+
     def check_fail_only(test_case, eval_status_map, success, failed):
         if (
             test_case in eval_status_map
@@ -133,10 +179,13 @@ def get_eval_tests_report(
         check_test_case(test_case, eval_status_map, f2p_success, f2p_failure)
 
     # Calculate maintenance metrics
+    check_p2p = (
+        check_maintained if eval_type == EvalType.PASS_AND_FAIL else check_fail_only
+    )
     p2p_success = []
     p2p_failure = []
     for test_case in gold_results[PASS_TO_PASS]:
-        check_test_case(test_case, eval_status_map, p2p_success, p2p_failure)
+        check_p2p(test_case, eval_status_map, p2p_success, p2p_failure)
 
     results = {
         FAIL_TO_PASS: {
@@ -238,7 +287,7 @@ def get_eval_report(
     """
     report_map = {}
 
-    instance_id = prediction[KEY_INSTANCE_ID]
+    instance_id = prediction["instance_id"]
     report_map[instance_id] = {
         "patch_is_None": False,
         "patch_exists": False,
@@ -247,7 +296,7 @@ def get_eval_report(
     }
 
     # Check if the model patch exists
-    if prediction[KEY_PREDICTION] is None:
+    if prediction["model_patch"] is None:
         report_map[instance_id]["patch_is_None"] = True
         return report_map
     report_map[instance_id]["patch_exists"] = True
@@ -260,17 +309,14 @@ def get_eval_report(
     report_map[instance_id]["patch_successfully_applied"] = True
 
     eval_ref = {
-        KEY_INSTANCE_ID: test_spec.instance_id,
+        "instance_id": test_spec.instance_id,
         FAIL_TO_PASS: test_spec.FAIL_TO_PASS,
         PASS_TO_PASS: test_spec.PASS_TO_PASS,
     }
 
-    eval_type = EvalType.FAIL_ONLY if test_spec.repo in FAIL_ONLY_REPOS \
-        else EvalType.PASS_AND_FAIL
+    eval_type = EvalType(test_spec.eval_type)
 
-    report = get_eval_tests_report(
-        eval_status_map, eval_ref, eval_type=eval_type
-    )
+    report = get_eval_tests_report(eval_status_map, eval_ref, eval_type=eval_type)
     if get_resolution_status(report) == ResolvedStatus.FULL.value:
         report_map[instance_id]["resolved"] = True
 
